@@ -1,0 +1,7 @@
+[server]
+headless = true
+port = 8503
+address = "localhost"
+
+[browser]
+gatherUsageStats = false
