@@ -1,369 +1,405 @@
-"""
+﻿"""
 universal_db.py
-Database and Persistence Layer for the Universal Competitor Intelligence Platform.
-Industry-agnostic architecture: completely free of any specific brand or vertical hardcoding.
-Maintains company profile briefs and placed competitors in SQLite.
+Storage layer for Lunsad Competitor Snapshot Platform.
+Designed for Philippine SME consulting workflows with multi-client support,
+safe CRUD operations, schema migrations, and zero fabricated data.
 """
 import sqlite3
 import os
 import json
+import logging
 from datetime import datetime
-from typing import Dict, Any, List, Optional
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "market_radar.db")
+
+logger = logging.getLogger(__name__)
+
+
+# Allow override via environment variable or default to local directory
+DB_PATH = os.environ.get("LUNSAD_DB_PATH", os.path.join(os.path.dirname(__file__), "market_radar.db"))
+
 
 def get_connection():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
+
 def init_db():
-    conn = get_connection()
-    c = conn.cursor()
+    """Initializes tables with proper relational schema and migration checks."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        
+        # 1. Clients / Business Workspaces
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS clients (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                location TEXT DEFAULT '',
+                industry TEXT DEFAULT '',
+                price_range TEXT DEFAULT '',
+                offerings TEXT DEFAULT '',
+                target_customers TEXT DEFAULT '',
+                sales_channels TEXT DEFAULT '',
+                why_choose_us TEXT DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
 
-    # 1. Company Profile & Strategic Brief (Inputted by Competitor Specialist)
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS company_profile (
-        id INTEGER PRIMARY KEY,
-        name TEXT NOT NULL,
-        domain TEXT,
-        industry TEXT,
-        company_brief TEXT,
-        core_differentiators TEXT,
-        key_offerings TEXT,
-        target_market TEXT,
-        pricing_model TEXT,
-        updated_at TEXT
-    )
-    """)
 
-    # 2. Placed Competitor Profiles
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS competitors (
-        name TEXT PRIMARY KEY,
-        domain TEXT,
-        category TEXT,
-        brief TEXT,
-        inherent_threat_score REAL DEFAULT 5.0,
-        control_efficacy_score REAL DEFAULT 6.0,
-        market_footprint_score REAL DEFAULT 5.0,
-        friction_rate REAL DEFAULT 30.0,
-        rival_pricing_anchor TEXT,
-        rival_core_hook TEXT,
-        quick_rebuttal TEXT,
-        landmines TEXT,
-        claims_vs_facts TEXT,
-        created_at TEXT,
-        updated_at TEXT
-    )
-    """)
+        # 2. Competitors Table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS competitors (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                client_id INTEGER NOT NULL,
+                name TEXT NOT NULL COLLATE NOCASE,
+                category TEXT DEFAULT 'Same product, same area',
+                price_range TEXT DEFAULT '',
+                main_promise TEXT DEFAULT '',
+                where_they_sell TEXT DEFAULT '',
+                weak_spot TEXT DEFAULT '',
+                weak_spot_source TEXT DEFAULT '',
+                strength_rating INTEGER DEFAULT 3,
+                unhappy_rating INTEGER DEFAULT 3,
+                why_choose_you TEXT DEFAULT '',
+                watch_out TEXT DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE,
+                UNIQUE (client_id, name)
+            )
+        """)
 
-    # 3. Market Signals & News Stream
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS signals (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        competitor TEXT,
-        platform TEXT,
-        title TEXT,
-        snippet TEXT,
-        url TEXT,
-        timestamp TEXT
-    )
-    """)
 
-    conn.commit()
+        # 3. Snapshot 30-Day Action Plans
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS snapshot_plans (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                client_id INTEGER NOT NULL UNIQUE,
+                action_1_title TEXT DEFAULT '',
+                action_1_desc TEXT DEFAULT '',
+                action_1_link TEXT DEFAULT '',
+                action_2_title TEXT DEFAULT '',
+                action_2_desc TEXT DEFAULT '',
+                action_2_link TEXT DEFAULT '',
+                action_3_title TEXT DEFAULT '',
+                action_3_desc TEXT DEFAULT '',
+                action_3_link TEXT DEFAULT '',
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
+            )
+        """)
+        conn.commit()
 
-    # Seed initial industry-agnostic sample data if empty
-    c.execute("SELECT COUNT(*) as count FROM company_profile")
-    if c.fetchone()["count"] == 0:
-        seed_sample_data(conn)
 
-    conn.close()
+# --- CLIENT OPERATIONS ---
 
-def seed_sample_data(conn):
-    c = conn.cursor()
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # Sample Company: Nexus Systems (Enterprise Cloud & Analytics)
-    c.execute("""
-    INSERT INTO company_profile (
-        id, name, domain, industry, company_brief, core_differentiators, key_offerings, target_market, pricing_model, updated_at
-    ) VALUES (
-        1,
-        'Nexus Systems',
-        'nexussystems.io',
-        'Enterprise Software & Intelligence Platforms',
-        'Nexus Systems provides enterprise organizations with unified autonomous decision intelligence, automated compliance auditing, and real-time operational radar systems.',
-        'Zero-trust modular data pipelines; sub-second query retrieval across heterogeneous data silos; 100% data sovereign on-prem or private cloud deployment.',
-        'Nexus Core Platform, Enterprise Risk Auditor, Autonomous Market Radar, Executive Decision Room',
-        'Mid-market and Global 2000 enterprises, regulated financial institutions, industrial operators',
-        'Annual subscription per active intelligence node with tier-based compute allocation',
-        ?
-    )
-    """, (now_str,))
+def get_all_clients():
+    init_db()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM clients ORDER BY name ASC")
+        return [dict(row) for row in cursor.fetchall()]
 
-    # Sample Placed Competitors
-    sample_comps = [
-        {
-            "name": "CloudScale Global",
-            "domain": "cloudscaleglobal.com",
-            "category": "Direct Competitor",
-            "brief": "Large legacy competitor with broad market reach and aggressive commercial marketing, but plagued by rigid long-term contracts and high customer support latency.",
-            "inherent_threat_score": 8.4,
-            "control_efficacy_score": 6.8,
-            "market_footprint_score": 8.5,
-            "friction_rate": 62.0,
-            "rival_pricing_anchor": "$120,000 / Year + High Professional Services Fees",
-            "rival_core_hook": "The legacy standard in enterprise data aggregation with global 24/7 account representatives.",
-            "quick_rebuttal": "CloudScale relies on fragmented multi-tenant architectures that require 6-9 months of costly systems integration. Nexus deploys within 48 hours with guaranteed data sovereignty.",
-            "landmines": json.dumps([
-                "Ask for their mean-time-to-resolution (MTTR) SLA on custom data pipeline failures.",
-                "Inquire whether customer data is co-located across shared multi-tenant clusters.",
-                "Request exact line-item costs for mandatory professional services in Year 2 renewal."
-            ]),
-            "claims_vs_facts": json.dumps([
-                {"claim": "Turnkey deployment across any enterprise infrastructure.", "fact": "Independent customer reviews report average onboarding duration exceeds 180 days with required billable consultants."},
-                {"claim": "99.99% automated ingestion uptime.", "fact": "Field reports document regular pipeline timeouts during high-throughput schema transformations."}
-            ])
-        },
-        {
-            "name": "LegacyCorp ERP",
-            "domain": "legacycorperp.com",
-            "category": "Legacy Incumbent",
-            "brief": "Dominant institutional incumbent with deep multi-year vendor lock-in, slow feature iteration velocity, and steep maintenance surcharges.",
-            "inherent_threat_score": 7.5,
-            "control_efficacy_score": 7.5,
-            "market_footprint_score": 9.0,
-            "friction_rate": 78.0,
-            "rival_pricing_anchor": "$250,000+ Enterprise Master Services Agreement",
-            "rival_core_hook": "Nobody gets fired for choosing LegacyCorp.",
-            "quick_rebuttal": "LegacyCorp locks buyers into 5-year monolithic upgrade cycles. Nexus offers a modular API-first architecture with modern UX and zero lock-in.",
-            "landmines": json.dumps([
-                "Ask how many business days are required to export all raw operational data upon contract termination.",
-                "Check their mobile responsiveness and browser UI compatibility."
-            ]),
-            "claims_vs_facts": json.dumps([
-                {"claim": "All-in-one comprehensive operating suite.", "fact": "Components are stitched together through past acquisitions with disjointed logins and inconsistent database models."}
-            ])
-        },
-        {
-            "name": "Vanguard Platform",
-            "domain": "vanguardplatform.tech",
-            "category": "Direct Competitor",
-            "brief": "Venture-backed high-velocity challenger with aggressive pricing discounts, high sales turnover, and incomplete enterprise security certifications.",
-            "inherent_threat_score": 6.8,
-            "control_efficacy_score": 6.2,
-            "market_footprint_score": 5.5,
-            "friction_rate": 45.0,
-            "rival_pricing_anchor": "Discounts up to 60% for upfront annual commitments",
-            "rival_core_hook": "Next-generation lightweight analytics with instant self-service sign-up.",
-            "quick_rebuttal": "Vanguard lacks SOC 2 Type II and HIPAA compliance certifications. Nexus meets strict global regulatory compliance out of the box.",
-            "landmines": json.dumps([
-                "Request audited third-party penetration testing and SOC 2 Type II compliance reports.",
-                "Inquire about dedicated customer success engineer availability during non-US business hours."
-            ]),
-            "claims_vs_facts": json.dumps([
-                {"claim": "Enterprise-grade bank security encryption.", "fact": "Lacks dedicated hardware security module (HSM) key isolation and role-based row-level permissions."}
-            ])
-        },
-        {
-            "name": "AeroSync Dynamics",
-            "domain": "aerosyncdynamics.com",
-            "category": "Emerging Disruptor",
-            "brief": "Boutique AI startup focusing on automated signal detection, growing rapidly in regional startup ecosystems.",
-            "inherent_threat_score": 4.5,
-            "control_efficacy_score": 7.0,
-            "market_footprint_score": 3.0,
-            "friction_rate": 25.0,
-            "rival_pricing_anchor": "$2,500 / Month flat rate",
-            "rival_core_hook": "AI-first autonomous agents doing the work of 5 market researchers.",
-            "quick_rebuttal": "AeroSync lacks custom data connectors and historical longitudinal databases. Nexus provides verifiable audit trails with deep relational integrity.",
-            "landmines": json.dumps([
-                "Ask how AI hallucinations and ungrounded market claims are filtered before executive delivery."
-            ]),
-            "claims_vs_facts": json.dumps([
-                {"claim": "100% automated market research with zero human intervention.", "fact": "Relies on generic public LLM web search without verifiable source cross-referencing."}
-            ])
-        }
-    ]
 
-    for comp in sample_comps:
-        c.execute("""
-        INSERT INTO competitors (
-            name, domain, category, brief, inherent_threat_score, control_efficacy_score,
-            market_footprint_score, friction_rate, rival_pricing_anchor, rival_core_hook,
-            quick_rebuttal, landmines, claims_vs_facts, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+def get_client(client_id):
+    init_db()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM clients WHERE id = ?", (client_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+
+def save_client(client_data):
+    init_db()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    name = client_data.get("name", "").strip()
+    if not name:
+        raise ValueError("Client name cannot be blank.")
+
+
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        client_id = client_data.get("id")
+        if client_id:
+            cursor.execute("""
+                UPDATE clients SET
+                    name = ?, location = ?, industry = ?, price_range = ?,
+                    offerings = ?, target_customers = ?, sales_channels = ?,
+                    why_choose_us = ?, updated_at = ?
+                WHERE id = ?
+            """, (
+                name,
+                client_data.get("location", "").strip(),
+                client_data.get("industry", "").strip(),
+                client_data.get("price_range", "").strip(),
+                client_data.get("offerings", "").strip(),
+                client_data.get("target_customers", "").strip(),
+                client_data.get("sales_channels", "").strip(),
+                client_data.get("why_choose_us", "").strip(),
+                now,
+                client_id
+            ))
+            return client_id
+        else:
+            cursor.execute("""
+                INSERT INTO clients (
+                    name, location, industry, price_range, offerings,
+                    target_customers, sales_channels, why_choose_us,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                name,
+                client_data.get("location", "").strip(),
+                client_data.get("industry", "").strip(),
+                client_data.get("price_range", "").strip(),
+                client_data.get("offerings", "").strip(),
+                client_data.get("target_customers", "").strip(),
+                client_data.get("sales_channels", "").strip(),
+                client_data.get("why_choose_us", "").strip(),
+                now,
+                now
+            ))
+            return cursor.lastrowid
+
+
+def delete_client(client_id):
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM competitors WHERE client_id = ?", (client_id,))
+        cursor.execute("DELETE FROM snapshot_plans WHERE client_id = ?", (client_id,))
+        cursor.execute("DELETE FROM clients WHERE id = ?", (client_id,))
+        conn.commit()
+
+
+# --- COMPETITOR OPERATIONS ---
+
+
+def get_competitors_for_client(client_id):
+    init_db()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM competitors WHERE client_id = ? ORDER BY id ASC", (client_id,))
+        return [dict(row) for row in cursor.fetchall()]
+
+
+def get_competitor(comp_id):
+    init_db()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM competitors WHERE id = ?", (comp_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+
+def save_competitor(comp_data):
+    init_db()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    name = comp_data.get("name", "").strip()
+    client_id = comp_data.get("client_id")
+    
+    if not name:
+        raise ValueError("Competitor name cannot be empty.")
+    if not client_id:
+        raise ValueError("Competitor must be linked to a valid client workspace.")
+
+
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        comp_id = comp_data.get("id")
+        
+        # Check duplicate name within the same client
+        if comp_id:
+            cursor.execute("SELECT id FROM competitors WHERE client_id = ? AND name = ? AND id != ?", (client_id, name, comp_id))
+            if cursor.fetchone():
+                raise ValueError(f"A competitor named '{name}' already exists for this business.")
+                
+            cursor.execute("""
+                UPDATE competitors SET
+                    name = ?, category = ?, price_range = ?, main_promise = ?,
+                    where_they_sell = ?, weak_spot = ?, weak_spot_source = ?,
+                    strength_rating = ?, unhappy_rating = ?, why_choose_you = ?,
+                    watch_out = ?, updated_at = ?
+                WHERE id = ?
+            """, (
+                name,
+                comp_data.get("category", "Same product, same area"),
+                comp_data.get("price_range", "").strip(),
+                comp_data.get("main_promise", "").strip(),
+                comp_data.get("where_they_sell", "").strip(),
+                comp_data.get("weak_spot", "").strip(),
+                comp_data.get("weak_spot_source", "").strip(),
+                int(comp_data.get("strength_rating", 3)),
+                int(comp_data.get("unhappy_rating", 3)),
+                comp_data.get("why_choose_you", "").strip(),
+                comp_data.get("watch_out", "").strip(),
+                now,
+                comp_id
+            ))
+            return comp_id
+        else:
+            cursor.execute("SELECT id FROM competitors WHERE client_id = ? AND name = ?", (client_id, name))
+            if cursor.fetchone():
+                raise ValueError(f"A competitor named '{name}' already exists. Please choose a distinct name or edit the existing profile.")
+                
+            cursor.execute("""
+                INSERT INTO competitors (
+                    client_id, name, category, price_range, main_promise,
+                    where_they_sell, weak_spot, weak_spot_source,
+                    strength_rating, unhappy_rating, why_choose_you,
+                    watch_out, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                client_id,
+                name,
+                comp_data.get("category", "Same product, same area"),
+                comp_data.get("price_range", "").strip(),
+                comp_data.get("main_promise", "").strip(),
+                comp_data.get("where_they_sell", "").strip(),
+                comp_data.get("weak_spot", "").strip(),
+                comp_data.get("weak_spot_source", "").strip(),
+                int(comp_data.get("strength_rating", 3)),
+                int(comp_data.get("unhappy_rating", 3)),
+                comp_data.get("why_choose_you", "").strip(),
+                comp_data.get("watch_out", "").strip(),
+                now,
+                now
+            ))
+            return cursor.lastrowid
+
+
+def delete_competitor(comp_id):
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM competitors WHERE id = ?", (comp_id,))
+        conn.commit()
+
+
+# --- SNAPSHOT PLANS ---
+
+
+def get_snapshot_plan(client_id):
+    init_db()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM snapshot_plans WHERE client_id = ?", (client_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+
+def save_snapshot_plan(client_id, plan_data):
+    init_db()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO snapshot_plans (
+                client_id, action_1_title, action_1_desc, action_1_link,
+                action_2_title, action_2_desc, action_2_link,
+                action_3_title, action_3_desc, action_3_link,
+                updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(client_id) DO UPDATE SET
+                action_1_title = excluded.action_1_title,
+                action_1_desc = excluded.action_1_desc,
+                action_1_link = excluded.action_1_link,
+                action_2_title = excluded.action_2_title,
+                action_2_desc = excluded.action_2_desc,
+                action_2_link = excluded.action_2_link,
+                action_3_title = excluded.action_3_title,
+                action_3_desc = excluded.action_3_desc,
+                action_3_link = excluded.action_3_link,
+                updated_at = excluded.updated_at
         """, (
-            comp["name"], comp["domain"], comp["category"], comp["brief"],
-            comp["inherent_threat_score"], comp["control_efficacy_score"], comp["market_footprint_score"],
-            comp["friction_rate"], comp["rival_pricing_anchor"], comp["rival_core_hook"],
-            comp["quick_rebuttal"], comp["landmines"], comp["claims_vs_facts"],
-            now_str, now_str
+            client_id,
+            plan_data.get("action_1_title", "").strip(),
+            plan_data.get("action_1_desc", "").strip(),
+            plan_data.get("action_1_link", "").strip(),
+            plan_data.get("action_2_title", "").strip(),
+            plan_data.get("action_2_desc", "").strip(),
+            plan_data.get("action_2_link", "").strip(),
+            plan_data.get("action_3_title", "").strip(),
+            plan_data.get("action_3_desc", "").strip(),
+            plan_data.get("action_3_link", "").strip(),
+            now
         ))
+        conn.commit()
 
-    # Sample signals
-    sample_signals = [
-        ("CloudScale Global", "Industry Wire", "CloudScale Announces Restructuring of Regional Customer Success Units", "Enterprise customers report extended ticket backlog following quarterly cost-reduction measures.", "https://example.com/news1"),
-        ("LegacyCorp ERP", "Tech Regulatory Bulletin", "LegacyCorp Faces Class Inquiries Regarding Data Portability Fees", "Enterprise clients contest retroactive fee hikes applied during cloud migration transitions.", "https://example.com/news2"),
-        ("Vanguard Platform", "Venture Digest", "Vanguard Platform Closes Series B Growth Round", "Capital to be deployed toward aggressive direct-to-consumer enterprise sales funnels.", "https://example.com/news3")
-    ]
-    for s_comp, s_plat, s_title, s_snip, s_url in sample_signals:
-        c.execute("""
-        INSERT INTO signals (competitor, platform, title, snippet, url, timestamp)
-        VALUES (?, ?, ?, ?, ?, ?)
-        """, (s_comp, s_plat, s_title, s_snip, s_url, now_str))
 
-    conn.commit()
-
-def get_company_profile() -> Dict[str, Any]:
+def load_sample_bakery_data():
+    """Seeds the exact 'Tita Nena's Bakeshop' fictional demo data shown in the approved mockups."""
     init_db()
-    conn = get_connection()
-    c = conn.cursor()
-    c.execute("SELECT * FROM company_profile WHERE id = 1")
-    row = c.fetchone()
-    conn.close()
-    if row:
-        return dict(row)
-    return {
-        "name": "My Company",
-        "domain": "",
-        "industry": "General Enterprise",
-        "company_brief": "",
-        "core_differentiators": "",
-        "key_offerings": "",
-        "target_market": "",
-        "pricing_model": "",
-        "updated_at": ""
-    }
+    client_id = save_client({
+        "name": "Tita Nena's Bakeshop",
+        "location": "Concepcion Uno, Marikina",
+        "industry": "Bakery & Pastries",
+        "price_range": "₱5 to ₱850",
+        "offerings": "Fresh pandesal, ensaymada, and made-to-order custom cakes",
+        "target_customers": "Families and small offices in Concepcion Uno, Marikina",
+        "sales_channels": "Walk-in store, Facebook page, GrabFood",
+        "why_choose_us": "Hot bread baked twice every morning; carefully boxed safe-arrival cake transport"
+    })
+    
+    # 3 Competitors
+    save_competitor({
+        "client_id": client_id,
+        "name": "Panaderya Uno",
+        "category": "Same product, same area",
+        "price_range": "₱4 to ₱6 pandesal, cakes from ₱650",
+        "main_promise": "Pinakamurang pandesal sa barangay",
+        "where_they_sell": "Walk-in store, Facebook page",
+        "weak_spot": "Several Facebook comments say pandesal runs out before 7 AM.",
+        "weak_spot_source": "FB page comments, checked 25 Sep 2026",
+        "strength_rating": 4,
+        "unhappy_rating": 4,
+        "why_choose_you": "We bake twice every morning so our bread never runs out before 9 AM.",
+        "watch_out": "They undercut on plain loaf bread."
+    })
+    
+    save_competitor({
+        "client_id": client_id,
+        "name": "Crumbs & Co.",
+        "category": "Online seller (Shopee/Lazada/FB)",
+        "price_range": "₱750 to ₱1,200 custom cakes",
+        "main_promise": "Custom cakes delivered same day",
+        "where_they_sell": "Facebook, Instagram, Lalamove delivery",
+        "weak_spot": "A few reviews mention cakes arriving dented or tilted.",
+        "weak_spot_source": "FB reviews, checked 24 Sep 2026",
+        "strength_rating": 4,
+        "unhappy_rating": 2,
+        "why_choose_you": "Every custom cake includes dedicated safe-transport packaging with pre-dispatch photo verification.",
+        "watch_out": "Heavy Instagram ad presence."
+    })
 
-def save_company_profile(data: Dict[str, Any]):
-    init_db()
-    conn = get_connection()
-    c = conn.cursor()
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    c.execute("""
-    INSERT INTO company_profile (id, name, domain, industry, company_brief, core_differentiators, key_offerings, target_market, pricing_model, updated_at)
-    VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(id) DO UPDATE SET
-        name = excluded.name,
-        domain = excluded.domain,
-        industry = excluded.industry,
-        company_brief = excluded.company_brief,
-        core_differentiators = excluded.core_differentiators,
-        key_offerings = excluded.key_offerings,
-        target_market = excluded.target_market,
-        pricing_model = excluded.pricing_model,
-        updated_at = excluded.updated_at
-    """, (
-        data.get("name", "My Company"),
-        data.get("domain", ""),
-        data.get("industry", ""),
-        data.get("company_brief", ""),
-        data.get("core_differentiators", ""),
-        data.get("key_offerings", ""),
-        data.get("target_market", ""),
-        data.get("pricing_model", ""),
-        now_str
-    ))
-    conn.commit()
-    conn.close()
 
-def get_all_competitors() -> List[Dict[str, Any]]:
-    init_db()
-    conn = get_connection()
-    c = conn.cursor()
-    c.execute("SELECT * FROM competitors ORDER BY inherent_threat_score DESC")
-    rows = [dict(r) for r in c.fetchall()]
-    conn.close()
-    return rows
+    save_competitor({
+        "client_id": client_id,
+        "name": "BreadHub Express",
+        "category": "Big chain / franchise",
+        "price_range": "₱8 to ₱45 per piece",
+        "main_promise": "Freshly baked every 2 hours",
+        "where_they_sell": "Mall kiosk, GrabFood",
+        "weak_spot": "No custom cakes; limited choice after 6 PM.",
+        "weak_spot_source": "Store visit and menu, 23 Sep 2026",
+        "strength_rating": 2,
+        "unhappy_rating": 2,
+        "why_choose_you": "Personal neighborhood touch, local custom orders, and full evening inventory.",
+        "watch_out": "Very strong branding and mall foot traffic."
+    })
 
-def get_competitor_names() -> List[str]:
-    init_db()
-    conn = get_connection()
-    c = conn.cursor()
-    c.execute("SELECT name FROM competitors ORDER BY name ASC")
-    names = [r["name"] for r in c.fetchall()]
-    conn.close()
-    return names
 
-def get_competitor(name: str) -> Optional[Dict[str, Any]]:
-    init_db()
-    conn = get_connection()
-    c = conn.cursor()
-    c.execute("SELECT * FROM competitors WHERE name = ?", (name,))
-    row = c.fetchone()
-    conn.close()
-    if row:
-        d = dict(row)
-        try:
-            d["landmines_list"] = json.loads(d.get("landmines") or "[]")
-        except Exception:
-            d["landmines_list"] = []
-        try:
-            d["claims_list"] = json.loads(d.get("claims_vs_facts") or "[]")
-        except Exception:
-            d["claims_list"] = []
-        return d
-    return None
-
-def save_competitor(comp: Dict[str, Any]):
-    init_db()
-    conn = get_connection()
-    c = conn.cursor()
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    landmines_json = json.dumps(comp.get("landmines_list", []))
-    claims_json = json.dumps(comp.get("claims_list", []))
-
-    c.execute("""
-    INSERT INTO competitors (
-        name, domain, category, brief, inherent_threat_score, control_efficacy_score,
-        market_footprint_score, friction_rate, rival_pricing_anchor, rival_core_hook,
-        quick_rebuttal, landmines, claims_vs_facts, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(name) DO UPDATE SET
-        domain = excluded.domain,
-        category = excluded.category,
-        brief = excluded.brief,
-        inherent_threat_score = excluded.inherent_threat_score,
-        control_efficacy_score = excluded.control_efficacy_score,
-        market_footprint_score = excluded.market_footprint_score,
-        friction_rate = excluded.friction_rate,
-        rival_pricing_anchor = excluded.rival_pricing_anchor,
-        rival_core_hook = excluded.rival_core_hook,
-        quick_rebuttal = excluded.quick_rebuttal,
-        landmines = excluded.landmines,
-        claims_vs_facts = excluded.claims_vs_facts,
-        updated_at = excluded.updated_at
-    """, (
-        comp["name"], comp.get("domain", ""), comp.get("category", "Direct Competitor"),
-        comp.get("brief", ""), float(comp.get("inherent_threat_score", 5.0)),
-        float(comp.get("control_efficacy_score", 6.0)), float(comp.get("market_footprint_score", 5.0)),
-        float(comp.get("friction_rate", 30.0)), comp.get("rival_pricing_anchor", ""),
-        comp.get("rival_core_hook", ""), comp.get("quick_rebuttal", ""),
-        landmines_json, claims_json, now_str, now_str
-    ))
-    conn.commit()
-    conn.close()
-
-def delete_competitor(name: str):
-    init_db()
-    conn = get_connection()
-    c = conn.cursor()
-    c.execute("DELETE FROM competitors WHERE name = ?", (name,))
-    c.execute("DELETE FROM signals WHERE competitor = ?", (name,))
-    conn.commit()
-    conn.close()
-
-def get_signals_for_competitor(comp_name: str = "") -> List[Dict[str, Any]]:
-    init_db()
-    conn = get_connection()
-    c = conn.cursor()
-    if comp_name and comp_name != "All Competitors":
-        c.execute("SELECT * FROM signals WHERE competitor = ? ORDER BY id DESC LIMIT 10", (comp_name,))
-    else:
-        c.execute("SELECT * FROM signals ORDER BY id DESC LIMIT 15")
-    rows = [dict(r) for r in c.fetchall()]
-    conn.close()
-    return rows
+    # Plan
+    save_snapshot_plan(client_id, {
+        "action_1_title": "Promise pandesal until 9 AM",
+        "action_1_desc": "Bake a second batch at 6:30 AM and post 'May pandesal pa!' on your FB page by 7:30 AM, every day for 30 days.",
+        "action_1_link": "Panaderya Uno runs out early",
+        "action_2_title": "Safe-arrival cake delivery",
+        "action_2_desc": "Free delivery within Concepcion for cakes over ₱800, with a photo of the boxed cake sent before it leaves.",
+        "action_2_link": "Crumbs & Co. cakes arrive damaged",
+        "action_3_title": "Start a suki card",
+        "action_3_desc": "10th ensaymada free. Target 40 sign-ups by 31 Oct; count them every Saturday.",
+        "action_3_link": "Keep regulars from trying the new kiosk"
+    })
+    return client_id
