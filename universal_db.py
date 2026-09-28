@@ -1,8 +1,8 @@
-﻿"""
+"""
 universal_db.py
 Storage layer for Lunsad Competitor Snapshot Platform.
 Designed for Philippine SME consulting workflows with multi-client support,
-safe CRUD operations, schema migrations, and zero fabricated data.
+safe CRUD operations, automatic schema migrations, and zero fabricated data.
 """
 import sqlite3
 import os
@@ -10,25 +10,31 @@ import json
 import logging
 from datetime import datetime
 
-
 logger = logging.getLogger(__name__)
-
 
 # Allow override via environment variable or default to local directory
 DB_PATH = os.environ.get("LUNSAD_DB_PATH", os.path.join(os.path.dirname(__file__), "market_radar.db"))
-
 
 def get_connection():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
-
 def init_db():
     """Initializes tables with proper relational schema and migration checks."""
     with get_connection() as conn:
         cursor = conn.cursor()
         
+        # Automatic Migration Check: detect legacy prototype schema (lacks 'id' or 'client_id')
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='competitors'")
+        if cursor.fetchone():
+            cols = [r[1] for r in cursor.execute("PRAGMA table_info(competitors)").fetchall()]
+            if "id" not in cols or "client_id" not in cols:
+                cursor.execute("DROP TABLE competitors")
+                cursor.execute("DROP TABLE IF EXISTS company_profile")
+                cursor.execute("DROP TABLE IF EXISTS signals")
+                conn.commit()
+
         # 1. Clients / Business Workspaces
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS clients (
@@ -45,7 +51,6 @@ def init_db():
                 updated_at TEXT NOT NULL
             )
         """)
-
 
         # 2. Competitors Table
         cursor.execute("""
@@ -70,7 +75,6 @@ def init_db():
             )
         """)
 
-
         # 3. Snapshot 30-Day Action Plans
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS snapshot_plans (
@@ -91,9 +95,7 @@ def init_db():
         """)
         conn.commit()
 
-
 # --- CLIENT OPERATIONS ---
-
 
 def get_all_clients():
     init_db()
@@ -101,7 +103,6 @@ def get_all_clients():
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM clients ORDER BY name ASC")
         return [dict(row) for row in cursor.fetchall()]
-
 
 def get_client(client_id):
     init_db()
@@ -111,14 +112,12 @@ def get_client(client_id):
         row = cursor.fetchone()
         return dict(row) if row else None
 
-
 def save_client(client_data):
     init_db()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     name = client_data.get("name", "").strip()
     if not name:
         raise ValueError("Client name cannot be blank.")
-
 
     with get_connection() as conn:
         cursor = conn.cursor()
@@ -164,7 +163,6 @@ def save_client(client_data):
             ))
             return cursor.lastrowid
 
-
 def delete_client(client_id):
     with get_connection() as conn:
         cursor = conn.cursor()
@@ -173,9 +171,7 @@ def delete_client(client_id):
         cursor.execute("DELETE FROM clients WHERE id = ?", (client_id,))
         conn.commit()
 
-
 # --- COMPETITOR OPERATIONS ---
-
 
 def get_competitors_for_client(client_id):
     init_db()
@@ -184,7 +180,6 @@ def get_competitors_for_client(client_id):
         cursor.execute("SELECT * FROM competitors WHERE client_id = ? ORDER BY id ASC", (client_id,))
         return [dict(row) for row in cursor.fetchall()]
 
-
 def get_competitor(comp_id):
     init_db()
     with get_connection() as conn:
@@ -192,7 +187,6 @@ def get_competitor(comp_id):
         cursor.execute("SELECT * FROM competitors WHERE id = ?", (comp_id,))
         row = cursor.fetchone()
         return dict(row) if row else None
-
 
 def save_competitor(comp_data):
     init_db()
@@ -204,7 +198,6 @@ def save_competitor(comp_data):
         raise ValueError("Competitor name cannot be empty.")
     if not client_id:
         raise ValueError("Competitor must be linked to a valid client workspace.")
-
 
     with get_connection() as conn:
         cursor = conn.cursor()
@@ -269,16 +262,13 @@ def save_competitor(comp_data):
             ))
             return cursor.lastrowid
 
-
 def delete_competitor(comp_id):
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("DELETE FROM competitors WHERE id = ?", (comp_id,))
         conn.commit()
 
-
 # --- SNAPSHOT PLANS ---
-
 
 def get_snapshot_plan(client_id):
     init_db()
@@ -287,7 +277,6 @@ def get_snapshot_plan(client_id):
         cursor.execute("SELECT * FROM snapshot_plans WHERE client_id = ?", (client_id,))
         row = cursor.fetchone()
         return dict(row) if row else None
-
 
 def save_snapshot_plan(client_id, plan_data):
     init_db()
@@ -327,22 +316,32 @@ def save_snapshot_plan(client_id, plan_data):
         ))
         conn.commit()
 
-
 def load_sample_bakery_data():
     """Seeds the exact 'Tita Nena's Bakeshop' fictional demo data shown in the approved mockups."""
     init_db()
-    client_id = save_client({
-        "name": "Tita Nena's Bakeshop",
-        "location": "Concepcion Uno, Marikina",
-        "industry": "Bakery & Pastries",
-        "price_range": "₱5 to ₱850",
-        "offerings": "Fresh pandesal, ensaymada, and made-to-order custom cakes",
-        "target_customers": "Families and small offices in Concepcion Uno, Marikina",
-        "sales_channels": "Walk-in store, Facebook page, GrabFood",
-        "why_choose_us": "Hot bread baked twice every morning; carefully boxed safe-arrival cake transport"
-    })
     
-    # 3 Competitors
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM clients WHERE name = ?", ("Tita Nena's Bakeshop",))
+        row = cursor.fetchone()
+        if row:
+            client_id = row["id"]
+            cursor.execute("SELECT count(*) FROM competitors WHERE client_id = ?", (client_id,))
+            if cursor.fetchone()[0] > 0:
+                return client_id
+        else:
+            client_id = save_client({
+                "name": "Tita Nena's Bakeshop",
+                "location": "Concepcion Uno, Marikina",
+                "industry": "Bakery & Pastries",
+                "price_range": "₱5 to ₱850",
+                "offerings": "Fresh pandesal, ensaymada, and made-to-order custom cakes",
+                "target_customers": "Families and small offices in Concepcion Uno, Marikina",
+                "sales_channels": "Walk-in store, Facebook page, GrabFood",
+                "why_choose_us": "Hot bread baked twice every morning; carefully boxed safe-arrival cake transport"
+            })
+
+    # Seed 3 Competitors if not already seeded
     save_competitor({
         "client_id": client_id,
         "name": "Panaderya Uno",
@@ -373,7 +372,6 @@ def load_sample_bakery_data():
         "watch_out": "Heavy Instagram ad presence."
     })
 
-
     save_competitor({
         "client_id": client_id,
         "name": "BreadHub Express",
@@ -389,8 +387,7 @@ def load_sample_bakery_data():
         "watch_out": "Very strong branding and mall foot traffic."
     })
 
-
-    # Plan
+    # Seed 30-Day Action Plan
     save_snapshot_plan(client_id, {
         "action_1_title": "Promise pandesal until 9 AM",
         "action_1_desc": "Bake a second batch at 6:30 AM and post 'May pandesal pa!' on your FB page by 7:30 AM, every day for 30 days.",
